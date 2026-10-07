@@ -1,0 +1,2763 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dinoland</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; color: #111; font-family: sans-serif; }
+    canvas { display: block; background: #1d3b22; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // The canvas fills the whole page, even when the window is resized.
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    function rebuild() {
+      resizeCanvas();
+      buildJungle();
+    }
+    window.addEventListener('resize', rebuild);
+
+
+    // ---- Jungle ----
+    // The whole jungle is worked out once and then drawn every frame,
+    // so the trees and plants don't jump to a different spot each frame.
+    let groundY = 0;
+    const start = { x: 0, y: 0 };   // where the dino starts each level
+    // The jungle is much wider than the screen. The camera follows the dino.
+    const world = { width: 0, pattern: 0 };
+    const camera = { x: 0 };
+    const LEVEL_COUNT = 30;  // this many levels, and 30 is the disco level
+    let level = 1;
+    let disco = false;       // is the disco level on?
+    let won = false;
+    let beams = [];          // wooden beams you can jump onto
+    let cave = null;         // the cave at the top of the beams: the exit to the next level
+    let lift = null;         // wooden lift next to the stairs, for anyone who'd rather not jump
+    let sign = null;         // the sign pointing to the lift
+    let levelText = '';      // big text when you finish a level
+    let levelTextTime = 0;
+    let hunters = [];        // people with dogs who want to catch you
+    let dolmen = null;       // the stone prison they lock you in
+    let captured = false;
+    let guards = [];         // the two guards at the dolmen entrance
+
+    // Dolmen dimensions. You walk in at the front, between the stones.
+    const DOLMEN = {
+      halfWidth: 170,  // from the center to the outermost stone
+      back: -20,       // the back wall
+      front: 90,       // the front, with the entrance
+      gate: 60,        // half the width of the opening you walk through
+      thick: 22,       // how thick the stone walls are
+    };
+    let farTrees = [];
+    let trees = [];
+    let vines = [];
+    let ferns = [];
+    let canopyLeaves = [];
+    let farthestTrees = [];  // the farthest, faintest trees on the horizon
+    let bushes = [];         // bushes along the horizon and on the forest floor
+    let forestFloor = [];    // leaves, twigs, pebbles and sun spots
+    let butterflies = [];
+    let fallingLeaves = [];  // leaves drifting down
+    let obstacles = [];
+    let coins = [];
+    let coinCount = 0;
+
+    // Our own random generator with a fixed seed, so the jungle looks the same
+    // every time as long as the window isn't resized.
+    function makeRandom(seed) {
+      let s = seed;
+      return function () {
+        s = (s * 1103515245 + 12345) % 2147483648;
+        return s / 2147483648;
+      };
+    }
+
+    function buildJungle() {
+      const t = makeRandom(20261007 + level * 7919);
+      disco = level >= LEVEL_COUNT;
+      const b = canvas.width;
+      const h = canvas.height;
+      groundY = h * 0.6;                    // horizon: the forest floor is nice and deep
+      world.width = Math.max(b * 4, 4800);  // how far you can walk left and right
+      world.pattern = b + 320;              // the background repeats after this
+
+      // The farthest trees: barely any color left, which gives the jungle depth
+      farthestTrees = [];
+      for (let x = -60; x < world.pattern + 80; x += 70 + t() * 60) {
+        farthestTrees.push({ x: x, width: 90 + t() * 120, height: 110 + t() * 170 });
+      }
+
+      // Distant, hazy treetops behind the horizon (they repeat as you walk)
+      farTrees = [];
+      for (let x = -40; x < world.pattern + 60; x += 50 + t() * 40) {
+        farTrees.push({ x: x, width: 60 + t() * 70, height: 70 + t() * 120 });
+      }
+
+      // Tree trunks in the background
+      trees = [];
+      const treeCount = Math.max(5, Math.round(world.pattern / 170));
+      for (let i = 0; i < treeCount; i++) {
+        trees.push({
+          x: (i + 0.3 + t() * 0.4) * (world.pattern / treeCount),
+          width: 18 + t() * 26,
+          color: t() < 0.5 ? '#3a2a1c' : '#4a3524',
+        });
+      }
+
+      // Vines hanging down from the top
+      vines = [];
+      for (let i = 0; i < Math.max(7, Math.round(world.pattern / 120)); i++) {
+        vines.push({
+          x: t() * world.pattern,
+          length: 80 + t() * 320,
+          curve: (t() - 0.5) * 70,
+          speed: 0.3 + t() * 0.5,
+          phase: t() * 6.28,
+        });
+      }
+
+      // Leaves hanging in from the top edge
+      canopyLeaves = [];
+      for (let x = -20; x < world.pattern + 40; x += 40 + t() * 40) {
+        canopyLeaves.push({ x: x, length: 50 + t() * 90, angle: -1.2 + t() * 2.4, phase: t() * 6.28 });
+      }
+
+      // Bushes: a row along the horizon to soften the transition,
+      // and scattered bushes further forward on the forest floor.
+      bushes = [];
+      for (let i = 0; i < Math.round(world.width / 55); i++) {
+        const backRow = t() < 0.62;
+        bushes.push({
+          x: t() * world.width,
+          y: backRow ? groundY + 2 + t() * 26 : groundY + 30 + t() * (h - groundY - 40),
+          scale: backRow ? 0.5 + t() * 0.4 : 0.7 + t() * 0.8,
+          dark: t() < 0.5,
+          flowers: t() < 0.25,
+          phase: t() * 6.28,
+        });
+      }
+
+      // The forest floor: fallen leaves, twigs, pebbles, patches of dirt and
+      // sun spots coming through the canopy.
+      forestFloor = [];
+      const floorKinds = ['leaf', 'leaf', 'leaf', 'twig', 'pebble', 'patch', 'light', 'light'];
+      for (let i = 0; i < Math.round(world.width / 6); i++) {
+        forestFloor.push({
+          x: t() * world.width,
+          y: groundY + 4 + t() * (h - groundY - 4),
+          kind: floorKinds[Math.floor(t() * floorKinds.length)],
+          scale: 0.6 + t() * 1.1,
+          angle: t() * 6.28,
+          tint: Math.floor(t() * 4),
+          phase: t() * 6.28,
+        });
+      }
+
+      // Butterflies fluttering above the forest floor
+      butterflies = [];
+      for (let i = 0; i < Math.round(world.width / 500); i++) {
+        butterflies.push({
+          x: t() * world.width,
+          y: groundY + 20 + t() * (h - groundY - 40),
+          height: 30 + t() * 70,
+          phase: t() * 6.28,
+          speed: 0.6 + t() * 0.8,
+          color: ['#f2e06a', '#e78fc0', '#9fd8ff', '#ffb45e'][Math.floor(t() * 4)],
+        });
+      }
+
+      // Leaves drifting down
+      fallingLeaves = [];
+      for (let i = 0; i < 26; i++) {
+        fallingLeaves.push({
+          x: t() * world.width,
+          y: t() * h,
+          fallSpeed: 22 + t() * 30,
+          swing: 20 + t() * 40,
+          phase: t() * 6.28,
+          scale: 0.7 + t() * 0.7,
+          color: ['#6f9a3e', '#3f7a35', '#8a7a2e', '#b06a2e'][Math.floor(t() * 4)],
+        });
+      }
+
+      // Rocks, fallen logs and tree stumps, scattered across the whole world.
+      // rx and ry are how wide and how deep you have to walk around them.
+      obstacles = [];
+      const kinds = ['rock', 'rock', 'log', 'stump'];
+      for (let i = 0; i < Math.round(world.width / 150); i++) {
+        const kind = kinds[Math.floor(t() * kinds.length)];
+        const ox = 60 + t() * (world.width - 120);
+        const oy = groundY + 15 + t() * (h - groundY - 25);
+        obstacles.push({
+          x: ox,
+          y: oy,
+          kind: kind,
+          scale: 0.8 + t() * 0.5,
+          rx: kind === 'log' ? 58 : kind === 'stump' ? 26 : 30,
+          ry: kind === 'log' ? 13 : 14,
+          // how tall it is compared to a plain one: the stump towers over the dino
+          tall: kind === 'log' ? 2.0 : kind === 'stump' ? 2.9 : 2.3,
+        });
+      }
+
+      // Each obstacle gets one or two coins, just outside the rock or log.
+      coins = [];
+      for (const o of obstacles) {
+        const count = 1 + Math.round(t());
+        for (let n = 0; n < count; n++) {
+          const angle = t() * Math.PI * 2;
+          const distX = o.rx * o.scale + 38;
+          const distY = o.ry * o.scale + 24;
+          const mx = o.x + Math.cos(angle) * distX;
+          const my = o.y + Math.sin(angle) * distY;
+          // Only if the coin lands on the forest floor and not inside another obstacle
+          if (mx < 25 || mx > world.width - 25) continue;
+          if (my < groundY + 12 || my > h - 8) continue;
+          if (hitsObstacle(mx, my)) continue;
+          coins.push({ x: mx, y: my, height: 0, phase: t() * 6.28, collected: false });
+        }
+      }
+
+      // A staircase of wooden beams climbing up and back, with a cave in the
+      // rock face at the top: that's your way to the next level.
+      beams = [];
+      // The top beam still has to fit on screen, with the cave above it.
+      // The beams are nice and wide and the steps are low, so climbing is easy.
+      const space = Math.max(90, groundY - 240);
+      const beamCount = Math.max(3, Math.min(7, 4 + Math.floor(level / 2), Math.floor(space / 55) + 1));
+      const step = Math.max(36, Math.min(55, space / (beamCount - 1)));
+      const caveX = 500 + t() * (world.width - 1000);
+      for (let i = 0; i < beamCount; i++) {
+        beams.push({
+          x: caveX - (beamCount - i) * 80,
+          y: groundY + 140 - i * (30 / (beamCount - 1)),
+          z: 55 + i * step,                // how high the beam hangs above the ground
+          width: 130,
+          depth: 76,
+        });
+      }
+      const topBeam = beams[beams.length - 1];
+      cave = { x: topBeam.x + 30, y: topBeam.y - 38, z: topBeam.z };
+
+      // A wooden lift next to the stairs: it slowly goes up and down, so you can
+      // also reach the top without jumping from beam to beam.
+      lift = {
+        x: topBeam.x + 100,  // right next to the top beam, so you can step straight onto it
+        y: topBeam.y + 10,
+        z: 2,
+        low: 2,              // low enough to simply walk onto
+        high: topBeam.z,
+        width: 96,
+        depth: 58,
+      };
+
+      // The sign pointing to the lift
+      sign = { x: lift.x + 80, y: lift.y + 96 };
+
+      // Where the dino starts: in the middle, towards the front of the forest
+      // floor, so it never starts hidden behind the stairs or the lift.
+      start.x = world.width / 2;
+      start.y = groundY + (h - groundY) * 0.6;
+      const stairsLeft = beams[0].x - beams[0].width / 2 - 40;
+      const stairsRight = sign.x + 40;
+      if (start.x > stairsLeft && start.x < stairsRight) {
+        start.y = Math.max(start.y, sign.y + 40);
+      }
+      start.y = Math.min(h - 20, start.y);
+      // Clear away any obstacle standing on the start spot
+      obstacles = obstacles.filter(o => Math.abs(o.x - start.x) > o.rx * o.scale + 40 || Math.abs(o.y - start.y) > o.ry * o.scale + 30);
+
+      // Every beam has a coin on it, so climbing pays off
+      for (const beam of beams) {
+        coins.push({ x: beam.x, y: beam.y, height: beam.z + 10, phase: beam.z, collected: false });
+      }
+
+      // The dolmen: a row of big stones with a capstone on top. This is where
+      // the hunters lock you up when they catch you.
+      dolmen = {
+        x: 400 + t() * (world.width - 800),
+        y: Math.min(h - 240, groundY + 110 + t() * 60),
+      };
+      if (Math.abs(dolmen.x - world.width / 2) < 450) {
+        // Too close to the start: move it aside, but keep it inside the world
+        dolmen.x += dolmen.x < world.width / 2 ? -800 : 800;
+      }
+
+      // Two guards, left and right of the entrance. They stay by the dolmen
+      // and grab you if you touch them. Beat them both and you're free.
+      guards = [];
+      for (const side of [-1, 1]) {
+        guards.push({
+          x: dolmen.x + side * 95,
+          y: dolmen.y + 104,
+          facesRight: side < 0,
+          health: 2,
+          flinch: 0,    // briefly red after a hit
+          defeated: false,
+          fallTime: 0,  // falling over takes a moment
+          sway: side * 2,
+        });
+      }
+
+      // People with dogs. They wander around until they spot you, then they give chase.
+      hunters = [];
+      const hunterCount = Math.min(5, 2 + Math.floor(level / 2));
+      for (let i = 0; i < hunterCount; i++) {
+        const hx = 400 + t() * (world.width - 800);
+        if (Math.abs(hx - world.width / 2) < 450) continue;   // not right next to the start
+        hunters.push({
+          x: hx,
+          home: hx,
+          y: groundY + 40 + t() * (h - groundY - 60),
+          dogX: hx + 40,
+          dogY: groundY + 40 + t() * (h - groundY - 60),
+          facesRight: t() < 0.5,
+          dogFacesRight: true,
+          step: t() * 6.28,
+          dogStep: t() * 6.28,
+          state: 'patrol',
+          scaredTime: 0,
+          dogScaredTime: 0,
+        });
+      }
+
+      // Ferns in the foreground, also spread across the whole world
+      ferns = [];
+      for (let i = 0; i < Math.round(world.width / 160); i++) {
+        ferns.push({
+          x: t() * world.width,
+          y: groundY + 30 + t() * (h - groundY - 30),
+          size: 0.7 + t() * 0.9,
+          phase: t() * 6.28,
+        });
+      }
+    }
+
+    // A single leaf: a pointed oval with a vein down the middle.
+    function drawLeaf(length, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(length * 0.4, length * 0.32, length, 0);
+      ctx.quadraticCurveTo(length * 0.4, -length * 0.32, 0, 0);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+      ctx.lineWidth = Math.max(1, length * 0.03);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(length, 0);
+      ctx.stroke();
+    }
+
+    // Draw a background layer twice side by side, so it keeps tiling
+    // seamlessly while you walk left or right. A small factor is
+    // far away (scrolls slowly), a large factor is close by.
+    function withParallax(factor, drawLayer) {
+      const P = world.pattern;
+      const shift = -((((camera.x * factor) % P) + P) % P);
+      for (const extra of [0, P]) {
+        ctx.save();
+        ctx.translate(shift + extra, 0);
+        drawLayer();
+        ctx.restore();
+      }
+    }
+
+    function drawJungle(time) {
+      const b = canvas.width;
+      const h = canvas.height;
+
+      if (disco) {
+        drawDiscoSky(time);
+      } else {
+      // Sky under the canopy: dark at the top, a light haze near the horizon
+      const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+      sky.addColorStop(0, '#132a1a');
+      sky.addColorStop(0.3, '#2c5730');
+      sky.addColorStop(0.72, '#6f9c5e');
+      sky.addColorStop(1, '#bfd5a4');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, b, groundY);
+
+      }
+
+      // The farthest trees, almost dissolved into the haze
+      withParallax(0.1, function () {
+        ctx.fillStyle = 'rgba(120,160,120,0.55)';
+        for (const tr of farthestTrees) {
+          ctx.beginPath();
+          ctx.ellipse(tr.x, groundY - tr.height * 0.45, tr.width / 2, tr.height / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+
+      // Distant treetops, these scroll the slowest
+      withParallax(0.2, function () {
+        ctx.fillStyle = '#2f6336';
+        for (const tr of farTrees) {
+          ctx.beginPath();
+          ctx.ellipse(tr.x, groundY - tr.height * 0.5, tr.width / 2, tr.height / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+
+      // Sunbeams slanting through the trees, with soft edges
+      ctx.save();
+      for (let i = 0; i < 5; i++) {
+        const x = ((i * 0.23 + 0.08) * b) - ((camera.x * 0.3) % b) + (i % 2 ? 0 : b * 0.05);
+        const ray = ctx.createLinearGradient(x, 0, x + 180, groundY);
+        ray.addColorStop(0, 'rgba(255,248,205,0.22)');
+        ray.addColorStop(1, 'rgba(255,248,205,0)');
+        ctx.fillStyle = ray;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x + 60, 0);
+        ctx.lineTo(x + 250, groundY);
+        ctx.lineTo(x + 120, groundY);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Tree trunks with a bit of green moss
+      withParallax(0.5, function () {
+        for (const tree of trees) {
+          ctx.fillStyle = tree.color;
+          ctx.fillRect(tree.x - tree.width / 2, 0, tree.width, groundY + 10);
+          ctx.fillStyle = 'rgba(90,150,70,0.25)';
+          ctx.fillRect(tree.x - tree.width / 2, 0, tree.width * 0.3, groundY + 10);
+        }
+      });
+
+      // Vines, gently swaying back and forth
+      withParallax(0.7, function () {
+      ctx.strokeStyle = '#2b5c2e';
+      for (const vine of vines) {
+        const swing = Math.sin(time * vine.speed + vine.phase) * 12;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(vine.x, -10);
+        ctx.quadraticCurveTo(vine.x + vine.curve + swing, vine.length * 0.6, vine.x + swing * 1.5, vine.length);
+        ctx.stroke();
+        // A leaf at the tip
+        ctx.save();
+        ctx.translate(vine.x + swing * 1.5, vine.length);
+        ctx.rotate(1.2 + Math.sin(time * vine.speed + vine.phase) * 0.2);
+        drawLeaf(16, '#36713a');
+        ctx.restore();
+      }
+      });
+
+      // Big leaves along the top edge
+      withParallax(0.85, function () {
+        for (const leaf of canopyLeaves) {
+          ctx.save();
+          ctx.translate(leaf.x, -6);
+          ctx.rotate(1.57 + leaf.angle * 0.4 + Math.sin(time * 0.6 + leaf.phase) * 0.05);
+          drawLeaf(leaf.length, '#2a6130');
+          ctx.restore();
+        }
+      });
+
+      if (disco) {
+        // The trees turn into dark silhouettes, like in a real club
+        ctx.fillStyle = 'rgba(12,6,30,0.5)';
+        ctx.fillRect(0, 0, b, groundY);
+        drawDanceFloor(time);
+        drawBushes(time, true);
+        drawDiscoBall(time);
+        return;
+      }
+
+      // Forest floor: damp earth that gets darker toward the front
+      const ground = ctx.createLinearGradient(0, groundY, 0, h);
+      ground.addColorStop(0, '#7d8f52');
+      ground.addColorStop(0.25, '#5e6f39');
+      ground.addColorStop(1, '#39421f');
+      ctx.fillStyle = ground;
+      ctx.fillRect(0, groundY, b, h - groundY);
+
+      drawBushes(time, true);   // the row of bushes along the horizon
+      drawForestFloor(time);
+      drawGrass(time);
+      drawBushes(time, false);  // scattered bushes further forward
+    }
+
+    // ---- The disco level ----
+    // The beat of the music: this number goes up by one on every beat.
+    function beatAt(time) {
+      return time * 2;
+    }
+
+    // A dark club with spotlights sweeping back and forth.
+    function drawDiscoSky(time) {
+      const b = canvas.width;
+      const pulse = Math.abs(Math.sin(beatAt(time) * Math.PI));
+
+      const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+      sky.addColorStop(0, '#120a22');
+      sky.addColorStop(0.55, '#24104a');
+      sky.addColorStop(1, 'hsl(' + Math.floor(time * 60 % 360) + ' 60% ' + (26 + pulse * 10) + '%)');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, b, groundY);
+
+      // Spotlights from the ceiling
+      ctx.save();
+      for (let i = 0; i < 5; i++) {
+        const angle = Math.sin(time * (0.5 + i * 0.17) + i) * 0.7;
+        const top = b * (0.12 + i * 0.19);
+        const bottom = top + Math.tan(angle) * groundY;
+        const color = 'hsl(' + Math.floor((time * 90 + i * 72) % 360) + ' 95% 60%)';
+        const ray = ctx.createLinearGradient(top, 0, bottom, groundY);
+        ray.addColorStop(0, color);
+        ray.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.globalAlpha = 0.3 + pulse * 0.2;
+        ctx.fillStyle = ray;
+        ctx.beginPath();
+        ctx.moveTo(top - 18, 0);
+        ctx.lineTo(top + 18, 0);
+        ctx.lineTo(bottom + 150, groundY);
+        ctx.lineTo(bottom - 150, groundY);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // The forest floor becomes a dance floor of colored tiles that change on the beat.
+    function drawDanceFloor(time) {
+      const b = canvas.width;
+      const h = canvas.height;
+      const beat = Math.floor(beatAt(time));
+      const colors = ['#ff3d7f', '#ffd23d', '#3dffb0', '#3d9bff', '#c43dff', '#ff8a3d'];
+
+      ctx.save();
+      const tileW = 78;
+      const tileH = 44;
+      const first = Math.floor(camera.x / tileW) * tileW;
+      for (let wx = first; wx < camera.x + b + tileW; wx += tileW) {
+        for (let y = groundY; y < h; y += tileH) {
+          const col = Math.floor(wx / tileW);
+          const row = Math.floor((y - groundY) / tileH);
+          const color = colors[(col + row * 2 + beat) % colors.length];
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = color;
+          ctx.fillRect(wx - camera.x, y, tileW - 2, tileH - 2);
+          // Shine on the tile
+          ctx.globalAlpha = 0.18;
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(wx - camera.x, y, tileW - 2, (tileH - 2) / 3);
+        }
+      }
+      ctx.restore();
+    }
+
+    // The disco ball hangs above the middle of the dance floor and spins.
+    function drawDiscoBall(time) {
+      const x = canvas.width / 2;
+      const y = 86;
+      const r = 40;
+      const spin = time * 1.2;
+
+      // Chain up to the ceiling
+      ctx.strokeStyle = '#8a8c84';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, y - r);
+      ctx.stroke();
+
+      // Light rays that spin along with the ball
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      for (let i = 0; i < 12; i++) {
+        const angle = spin + (i / 12) * Math.PI * 2;
+        ctx.fillStyle = 'hsl(' + Math.floor((i * 30 + time * 60) % 360) + ' 95% 65%)';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(angle) * 1400, y + Math.abs(Math.sin(angle)) * 900);
+        ctx.lineTo(x + Math.cos(angle + 0.08) * 1400, y + Math.abs(Math.sin(angle + 0.08)) * 900);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // The ball itself
+      ctx.fillStyle = '#9aa3b0';
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      // Little mirrors
+      for (let row = -3; row <= 3; row++) {
+        for (let col = -4; col <= 4; col++) {
+          const angle = spin + col * 0.38;
+          const px = x + Math.sin(angle) * r * 0.86 * Math.cos(row * 0.38);
+          const py = y + Math.sin(row * 0.38) * r * 0.86;
+          if (Math.cos(angle) < 0) continue;
+          const light = 40 + Math.cos(angle) * 45;
+          ctx.fillStyle = 'hsl(' + Math.floor((col * 24 + row * 12 + time * 90) % 360) + ' 70% ' + light + '%)';
+          ctx.fillRect(px - 4, py - 3.5, 8, 7);
+        }
+      }
+      // Highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.beginPath();
+      ctx.ellipse(x - 12, y - 16, 8, 5, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Leaves, twigs, pebbles, dirt patches and sun spots on the ground.
+    function drawForestFloor(time) {
+      const leafColors = ['#5e7a34', '#7d6b2c', '#8a5a2e', '#3f5a28'];
+      ctx.save();
+      for (const d of forestFloor) {
+        const x = d.x - camera.x;
+        if (x < -40 || x > canvas.width + 40) continue;
+        // Further away is smaller
+        const depthScale = 0.45 + ((d.y - groundY) / Math.max(1, canvas.height - groundY)) * 0.9;
+        const m = d.scale * depthScale;
+
+        if (d.kind === 'light') {
+          // A sun spot that shifts gently as the leaves sway
+          ctx.globalAlpha = 0.13 + Math.sin(time * 0.7 + d.phase) * 0.05;
+          ctx.fillStyle = '#fff6c8';
+          ctx.beginPath();
+          ctx.ellipse(x + Math.sin(time * 0.4 + d.phase) * 6, d.y, 34 * m, 13 * m, d.angle, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (d.kind === 'patch') {
+          // Dark patch of damp earth
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = '#2f3a1c';
+          ctx.beginPath();
+          ctx.ellipse(x, d.y, 30 * m, 11 * m, d.angle, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (d.kind === 'twig') {
+          ctx.globalAlpha = 0.85;
+          ctx.strokeStyle = '#4a3a24';
+          ctx.lineWidth = 1.6 * m;
+          ctx.beginPath();
+          ctx.moveTo(x - 9 * m, d.y);
+          ctx.quadraticCurveTo(x, d.y - 3 * m, x + 10 * m, d.y + 1 * m);
+          ctx.stroke();
+        } else if (d.kind === 'pebble') {
+          ctx.globalAlpha = 0.8;
+          ctx.fillStyle = '#8a8c84';
+          ctx.beginPath();
+          ctx.ellipse(x, d.y, 3.2 * m, 2.2 * m, d.angle, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          // Fallen leaf
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = leafColors[d.tint];
+          ctx.save();
+          ctx.translate(x, d.y);
+          ctx.rotate(d.angle);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 6 * m, 2.6 * m, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+      ctx.restore();
+    }
+
+    // Tufts of grass in several rows: smaller and paler further away.
+    function drawGrass(time) {
+      ctx.save();
+      for (const row of [0, 1, 2, 3]) {
+        const y = groundY + 4 + row * row * 34;
+        if (y > canvas.height) break;
+        const m = 0.6 + row * 0.38;
+        ctx.strokeStyle = ['#8aa857', '#7fa348', '#6d913c', '#5d7d33'][row];
+        ctx.lineWidth = 1.6 * m;
+        const step = 9 + row * 3;
+        const first = Math.floor(camera.x / step) * step;
+        for (let wx = first; wx < camera.x + canvas.width + step; wx += step) {
+          const x = wx - camera.x;
+          const bladeHeight = (7 + ((Math.abs(wx) * 7) % 9)) * m;
+          const sway = Math.sin(time * 0.9 + wx * 0.05) * 1.6 * m;
+          ctx.beginPath();
+          ctx.moveTo(x, y + 2);
+          ctx.quadraticCurveTo(x + sway, y - bladeHeight * 0.6, x + 2.5 * m + sway * 1.6, y - bladeHeight);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // A bush: a cluster of overlapping leafy blobs, sometimes with little flowers.
+    function drawBushes(time, backRow) {
+      for (const st of bushes) {
+        if (st.y < groundY + 28 !== backRow) continue;
+        const x = st.x - camera.x;
+        if (x < -90 || x > canvas.width + 90) continue;
+        const sway = Math.sin(time * 0.8 + st.phase) * 2;
+        ctx.save();
+        ctx.translate(x + sway, st.y);
+        ctx.scale(st.scale, st.scale);
+
+        // Shadow under the bush
+        ctx.fillStyle = 'rgba(0,0,0,0.18)';
+        ctx.beginPath();
+        ctx.ellipse(0, 2, 42, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Foliage
+        const dark = st.dark ? '#24501f' : '#2e5d26';
+        const light = st.dark ? '#3a6b2c' : '#477d33';
+        for (const [bx, by, br] of [[-26, -14, 20], [0, -24, 26], [24, -15, 19], [-12, -8, 16], [13, -7, 15]]) {
+          ctx.fillStyle = dark;
+          ctx.beginPath();
+          ctx.ellipse(bx, by, br, br * 0.78, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Light from above
+        ctx.fillStyle = light;
+        for (const [bx, by, br] of [[-4, -32, 15], [18, -22, 11], [-22, -22, 10]]) {
+          ctx.beginPath();
+          ctx.ellipse(bx, by, br, br * 0.6, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Little flowers
+        if (st.flowers) {
+          ctx.fillStyle = '#f0e2a8';
+          for (const [bx, by] of [[-16, -26], [6, -36], [20, -24], [-2, -18]]) {
+            ctx.beginPath();
+            ctx.arc(bx, by, 2.6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+    }
+
+    // Draws one obstacle with (0, 0) on the ground, in its own small units.
+    // Tall obstacles are built up (stacked boulders, a pile of logs, a tall
+    // broken trunk) instead of stretched, so moss and rings keep their shape.
+    function drawObstacle(o) {
+      if (o.kind === 'rock') {
+        // Shadow on the ground
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 26, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // A pile of boulders, biggest at the bottom
+        const top = -31 * o.tall;
+        const boulders = [
+          [0, -14, 24, 17, 0],
+          [3, -14 + (top + 25) * 0.5, 19, 15, 0.15],
+          [-2, top + 11, 14, 11, -0.1],
+        ];
+        for (const [bx, by, rx, ry, tilt] of boulders) {
+          ctx.fillStyle = '#7d7f78';
+          ctx.beginPath();
+          ctx.ellipse(bx, by, rx, ry, tilt, 0, Math.PI * 2);
+          ctx.fill();
+          // Light from above, darker underside
+          ctx.fillStyle = '#95978f';
+          ctx.beginPath();
+          ctx.ellipse(bx - rx * 0.2, by - ry * 0.3, rx * 0.6, ry * 0.6, tilt - 0.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#6a6c66';
+          ctx.beginPath();
+          ctx.ellipse(bx + rx * 0.5, by + ry * 0.4, rx * 0.38, ry * 0.4, 0.3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // A bit of moss on top
+        ctx.fillStyle = '#4e7f3c';
+        ctx.beginPath();
+        ctx.ellipse(-5, top + 2, 7, 3, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (o.kind === 'log') {
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 54, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Fallen trunks stacked on top of each other
+        const count = Math.max(1, Math.round(o.tall));
+        for (let i = 0; i < count; i++) {
+          const lx = i % 2 ? 6 : 0;
+          const ly = -i * 19;
+          // Trunk
+          ctx.fillStyle = '#5a3f28';
+          ctx.beginPath();
+          ctx.roundRect ? ctx.roundRect(lx - 50, ly - 20, 100, 20, 9) : ctx.rect(lx - 50, ly - 20, 100, 20);
+          ctx.fill();
+          // Lighter top
+          ctx.fillStyle = '#6d4e32';
+          ctx.fillRect(lx - 48, ly - 19, 96, 6);
+          // Growth rings on the end
+          ctx.fillStyle = '#8a6440';
+          ctx.beginPath();
+          ctx.ellipse(lx - 50, ly - 10, 6, 10, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#6d4e32';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.ellipse(lx - 50, ly - 10, 3, 5, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Moss on the top log
+        ctx.fillStyle = '#4e7f3c';
+        ctx.beginPath();
+        ctx.ellipse(10 + ((count - 1) % 2 ? 6 : 0), -(count - 1) * 19 - 21, 16, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 24, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const top = -34 * o.tall;
+        // Roots
+        ctx.fillStyle = '#4a3524';
+        for (const wx of [-18, -9, 9, 18]) {
+          ctx.beginPath();
+          ctx.moveTo(wx, 2);
+          ctx.lineTo(wx * 0.4, -14);
+          ctx.lineTo(wx * 0.9, -14);
+          ctx.closePath();
+          ctx.fill();
+        }
+        // A tall broken-off trunk, a little wider at the bottom
+        ctx.fillStyle = '#5a3f28';
+        ctx.beginPath();
+        ctx.moveTo(-15, 0);
+        ctx.lineTo(-13, top);
+        ctx.lineTo(13, top);
+        ctx.lineTo(15, 0);
+        ctx.closePath();
+        ctx.fill();
+        // Bark: a lighter side and a few long cracks
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        ctx.fillRect(-13, top, 8, -top);
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 1.2;
+        for (const [cx, from, to] of [[-4, 0.15, 0.55], [5, 0.4, 0.85], [-8, 0.6, 0.95]]) {
+          ctx.beginPath();
+          ctx.moveTo(cx, top * from);
+          ctx.lineTo(cx + 1, top * to);
+          ctx.stroke();
+        }
+        // Sawn surface on top
+        ctx.fillStyle = '#8a6440';
+        ctx.beginPath();
+        ctx.ellipse(0, top, 13, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#6d4e32';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(0, top, 7, 2.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // A little plant on top
+        ctx.fillStyle = '#4e7f3c';
+        ctx.beginPath();
+        ctx.ellipse(6, top - 3, 7, 3, -0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // A wooden beam hanging in the air, with (0, 0) on the ground below it.
+    function drawBeam(beam) {
+      const b = beam.width;
+      const d = beam.depth;
+
+      // Shadow on the forest floor, fainter the higher the beam hangs
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.08, 0.3 - beam.z / 900);
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, b / 2, d / 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(0, -beam.z);
+
+      // Two posts holding the beam up
+      ctx.fillStyle = '#4a3524';
+      ctx.fillRect(-b / 2 + 10, 0, 9, beam.z);
+      ctx.fillRect(b / 2 - 19, 0, 9, beam.z);
+
+      // Side of the beam
+      ctx.fillStyle = '#6d4e32';
+      ctx.fillRect(-b / 2, -4, b, 14);
+      // Top surface you stand on
+      ctx.fillStyle = '#8a6440';
+      ctx.beginPath();
+      ctx.ellipse(0, -4, b / 2, d / 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Planks on the top
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+      ctx.lineWidth = 2;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * (b / 6), -4 - d / 3.4);
+        ctx.lineTo(i * (b / 6), -4 + d / 3.4);
+        ctx.stroke();
+      }
+      // A bit of moss on the edge
+      ctx.fillStyle = '#4e7f3c';
+      ctx.beginPath();
+      ctx.ellipse(-b / 4, 8, 12, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // The wooden lift: a platform on two ropes, with (0, 0) on the ground below it.
+    function drawLift(time) {
+      const b = lift.width;
+      const d = lift.depth;
+
+      // Shadow of the platform on the ground
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.08, 0.3 - lift.z / 900);
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, b / 2, d / 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Two upright posts with a pulley on top
+      ctx.fillStyle = '#4a3524';
+      ctx.fillRect(-b / 2 - 6, -lift.high - 40, 8, lift.high + 40);
+      ctx.fillRect(b / 2 - 2, -lift.high - 40, 8, lift.high + 40);
+      // Crossbar at the top
+      ctx.fillStyle = '#5a3f28';
+      ctx.fillRect(-b / 2 - 10, -lift.high - 48, b + 20, 10);
+      // Pulleys
+      ctx.fillStyle = '#8a6440';
+      for (const px of [-b / 2 + 4, b / 2 - 4]) {
+        ctx.beginPath();
+        ctx.arc(px, -lift.high - 38, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#5a3f28';
+        ctx.beginPath();
+        ctx.arc(px, -lift.high - 38, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#8a6440';
+      }
+
+      // Ropes from the pulleys to the platform
+      ctx.strokeStyle = '#d6c89a';
+      ctx.lineWidth = 2;
+      for (const px of [-b / 2 + 4, b / 2 - 4]) {
+        ctx.beginPath();
+        ctx.moveTo(px, -lift.high - 38);
+        ctx.lineTo(px, -lift.z - 6);
+        ctx.stroke();
+      }
+
+      // The platform itself
+      ctx.save();
+      ctx.translate(0, -lift.z);
+      ctx.fillStyle = '#6d4e32';
+      ctx.fillRect(-b / 2, -5, b, 13);
+      ctx.fillStyle = '#8a6440';
+      ctx.beginPath();
+      ctx.ellipse(0, -5, b / 2, d / 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Planks
+      ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+      ctx.lineWidth = 2;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * (b / 6), -5 - d / 3.4);
+        ctx.lineTo(i * (b / 6), -5 + d / 3.4);
+        ctx.stroke();
+      }
+      // Rope around the edge, just like a real wooden dock
+      ctx.strokeStyle = '#d6c89a';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.ellipse(0, -5, b / 2 - 2, d / 3 - 1, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // The sign pointing to the lift.
+    function drawSign() {
+      // Shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 20, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Two sticks
+      ctx.fillStyle = '#5a3f28';
+      ctx.fillRect(-13, -26, 4, 26);
+      ctx.fillRect(9, -26, 4, 26);
+
+      // The board
+      ctx.fillStyle = '#8a6440';
+      ctx.beginPath();
+      ctx.moveTo(-24, -48);
+      ctx.lineTo(24, -46);
+      ctx.lineTo(24, -24);
+      ctx.lineTo(-24, -26);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#5a3f28';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // The text, scratched in with a stone
+      ctx.fillStyle = '#4a3524';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('NOOBS', 0, -40);
+      // Arrow pointing to the lift
+      ctx.fillText('\u2191', 0, -30);
+
+      // Little nails
+      ctx.fillStyle = '#6a6c66';
+      for (const [nx, ny] of [[-19, -42], [19, -40], [-19, -29], [19, -27]]) {
+        ctx.beginPath();
+        ctx.arc(nx, ny, 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // The cave in the rock face at the top of the beams.
+    function drawCave(time) {
+      ctx.save();
+      ctx.translate(cave.x, cave.y - cave.z);
+
+      // Rock face
+      ctx.fillStyle = '#6a6c66';
+      ctx.beginPath();
+      ctx.moveTo(-90, 30);
+      ctx.lineTo(-70, -80);
+      ctx.lineTo(-20, -120);
+      ctx.lineTo(50, -110);
+      ctx.lineTo(85, -40);
+      ctx.lineTo(80, 30);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#7d7f78';
+      ctx.beginPath();
+      ctx.moveTo(-70, -80);
+      ctx.lineTo(-20, -120);
+      ctx.lineTo(20, -95);
+      ctx.lineTo(-45, -55);
+      ctx.closePath();
+      ctx.fill();
+
+      // The dark opening
+      ctx.fillStyle = '#17120f';
+      ctx.beginPath();
+      ctx.moveTo(-34, 26);
+      ctx.quadraticCurveTo(-34, -46, 0, -46);
+      ctx.quadraticCurveTo(34, -46, 34, 26);
+      ctx.closePath();
+      ctx.fill();
+
+      // Soft light in the opening, pulsing a little
+      ctx.save();
+      ctx.globalAlpha = 0.18 + Math.sin(time * 2) * 0.07;
+      ctx.fillStyle = '#ffe9a8';
+      ctx.beginPath();
+      ctx.ellipse(0, 4, 20, 26, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Stalactites above the entrance
+      ctx.fillStyle = '#5d5f59';
+      for (const dx of [-22, -8, 8, 22]) {
+        ctx.beginPath();
+        ctx.moveTo(dx - 4, -40);
+        ctx.lineTo(dx, -26);
+        ctx.lineTo(dx + 4, -40);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Sign showing the next level
+      ctx.fillStyle = '#f6c62e';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('level ' + (level + 1), 0, -62);
+      ctx.restore();
+    }
+
+    // A hunter: a person in a fur with a net in his hand.
+    // (0, 0) is at his feet, and he faces right.
+    function drawHunter(hunter) {
+      const running = hunter.state !== 'patrol';
+      const swing = Math.sin(hunter.step) * (running ? 6 : 3);
+      const swing2 = -swing;
+
+      // Legs
+      ctx.fillStyle = '#9b6b43';
+      ctx.fillRect(-5 + swing, -14, 4.5, 14);
+      ctx.fillRect(1 + swing2, -14, 4.5, 14);
+      // Feet
+      ctx.fillStyle = '#4a3524';
+      ctx.fillRect(-6 + swing, -2, 7, 2.5);
+      ctx.fillRect(0 + swing2, -2, 7, 2.5);
+
+      // Fur for clothing
+      ctx.fillStyle = '#8a5a34';
+      ctx.beginPath();
+      ctx.moveTo(-7, -14);
+      ctx.lineTo(-6, -31);
+      ctx.lineTo(7, -31);
+      ctx.lineTo(8, -14);
+      ctx.closePath();
+      ctx.fill();
+      // Lighter patch on the fur
+      ctx.fillStyle = '#a9743f';
+      ctx.beginPath();
+      ctx.ellipse(1, -22, 4, 5, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Arm holding the net
+      ctx.strokeStyle = '#9b6b43';
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.moveTo(5, -28);
+      ctx.lineTo(13, -24 + Math.sin(hunter.step) * 2);
+      ctx.stroke();
+
+      // Net: a circle with a cross in it
+      ctx.strokeStyle = '#e4ddc8';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(17, -24, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(12, -24); ctx.lineTo(22, -24);
+      ctx.moveTo(17, -29); ctx.lineTo(17, -19);
+      ctx.stroke();
+
+      // Head
+      ctx.fillStyle = '#d9a071';
+      ctx.beginPath();
+      ctx.arc(1, -36, 6, 0, Math.PI * 2);
+      ctx.fill();
+      // Hair
+      ctx.fillStyle = '#3a2a1c';
+      ctx.beginPath();
+      ctx.arc(1, -38, 6.2, Math.PI, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(-5.5, -38, 3, 4);
+      // Eye
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(4, -36, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Exclamation mark once he's spotted you
+      if (hunter.state === 'chase') {
+        ctx.fillStyle = '#ff5a3c';
+        ctx.fillRect(0, -54, 3, 8);
+        ctx.fillRect(0, -44, 3, 3);
+      } else if (hunter.state === 'scared') {
+        ctx.fillStyle = '#9fd8ff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('!?', 1, -46);
+      }
+    }
+
+    // A dog, (0, 0) at its paws, facing right.
+    function drawDog(hunter) {
+      const swing = Math.sin(hunter.dogStep) * 3;
+
+      // Paws
+      ctx.fillStyle = '#6b4a2c';
+      ctx.fillRect(-7 + swing, -7, 3, 7);
+      ctx.fillRect(-2 - swing, -7, 3, 7);
+      ctx.fillRect(3 + swing, -7, 3, 7);
+      ctx.fillRect(7 - swing, -7, 3, 7);
+
+      // Tail
+      ctx.strokeStyle = '#7d5634';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(-8, -12);
+      ctx.quadraticCurveTo(-14, -16, -11, -20);
+      ctx.stroke();
+
+      // Body
+      ctx.fillStyle = '#7d5634';
+      ctx.beginPath();
+      ctx.ellipse(0, -11, 10, 5.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Head
+      ctx.beginPath();
+      ctx.ellipse(10, -15, 5.5, 4.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Snout
+      ctx.fillStyle = '#6b4a2c';
+      ctx.beginPath();
+      ctx.ellipse(15, -14, 3, 2.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Ear
+      ctx.fillStyle = '#5c3f26';
+      ctx.beginPath();
+      ctx.moveTo(7, -19);
+      ctx.lineTo(10, -24);
+      ctx.lineTo(12, -18);
+      ctx.closePath();
+      ctx.fill();
+      // Eye
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(11.5, -16, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // The dolmen: a big chamber of standing stones with flat capstones on top.
+    // There's an opening at the front you can walk through.
+    // One standing stone, with (0, 0) at the bottom center.
+    function drawStandingStone(width, height, light) {
+      ctx.fillStyle = light ? '#8b8d85' : '#6a6c66';
+      ctx.beginPath();
+      ctx.moveTo(-width / 2, 8);
+      ctx.lineTo(-width / 2 - 3, -height + 6);
+      ctx.lineTo(width / 2 - 2, -height);
+      ctx.lineTo(width / 2 + 2, 8);
+      ctx.closePath();
+      ctx.fill();
+      // Lit side
+      ctx.fillStyle = light ? '#9a9c94' : '#7d7f78';
+      ctx.beginPath();
+      ctx.moveTo(-width / 2, 8);
+      ctx.lineTo(-width / 2 - 3, -height + 6);
+      ctx.lineTo(-width / 6, -height + 3);
+      ctx.lineTo(-width / 6, 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawDolmen(frontSide) {
+      const B = DOLMEN.halfWidth;
+
+      if (!frontSide) {
+        // Shadow of the whole structure on the forest floor
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(0, DOLMEN.front / 2, B + 14, (DOLMEN.front - DOLMEN.back) / 2 + 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // The dark floor inside the dolmen
+        ctx.fillStyle = '#2a2721';
+        ctx.beginPath();
+        ctx.ellipse(0, (DOLMEN.back + DOLMEN.front) / 2, B - 20, (DOLMEN.front - DOLMEN.back) / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Back wall: a row of big stones
+        ctx.save();
+        ctx.translate(0, DOLMEN.back);
+        for (const dx of [-130, -65, 0, 65, 130]) {
+          ctx.save();
+          ctx.translate(dx, 0);
+          drawStandingStone(62, 150 + (dx % 3 === 0 ? 10 : 0), dx === -65 || dx === 65);
+          ctx.restore();
+        }
+        ctx.restore();
+
+        // Capstones on the back wall
+        ctx.save();
+        ctx.translate(0, DOLMEN.back - 150);
+        ctx.fillStyle = '#9a9c94';
+        ctx.beginPath();
+        ctx.moveTo(-B - 6, 16);
+        ctx.lineTo(-B + 10, -22);
+        ctx.lineTo(B - 6, -20);
+        ctx.lineTo(B + 8, 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#aeb0a8';
+        ctx.beginPath();
+        ctx.moveTo(-B + 10, -22);
+        ctx.lineTo(B - 6, -20);
+        ctx.lineTo(B - 24, -4);
+        ctx.lineTo(-B + 26, -6);
+        ctx.closePath();
+        ctx.fill();
+        // Moss on the capstone
+        ctx.fillStyle = '#4e7f3c';
+        ctx.beginPath();
+        ctx.ellipse(-40, -12, 34, 6, 0.02, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // Side walls: stones along the left and right
+        for (const side of [-1, 1]) {
+          for (const dy of [10, 55]) {
+            ctx.save();
+            ctx.translate(side * (B - 18), DOLMEN.back + dy);
+            drawStandingStone(50, 128, dy === 55);
+            ctx.restore();
+          }
+        }
+      } else {
+        // The front: two wide stones with the entrance between them
+        for (const side of [-1, 1]) {
+          ctx.save();
+          ctx.translate(side * (DOLMEN.gate + 52), DOLMEN.front);
+          drawStandingStone(104, 132, side > 0);
+          ctx.restore();
+        }
+        // A bit of moss at the bottom
+        ctx.fillStyle = '#4e7f3c';
+        ctx.beginPath();
+        ctx.ellipse(-DOLMEN.gate - 52, DOLMEN.front + 4, 40, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Are you inside? Then they roll a big stone in front of the opening.
+        if (captured) {
+          ctx.save();
+          ctx.translate(0, DOLMEN.front - 4);
+          ctx.fillStyle = 'rgba(0,0,0,0.3)';
+          ctx.beginPath();
+          ctx.ellipse(0, 10, 56, 12, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#7d7f78';
+          ctx.beginPath();
+          ctx.arc(0, -40, 52, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#95978f';
+          ctx.beginPath();
+          ctx.arc(-16, -52, 26, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#4e7f3c';
+          ctx.beginPath();
+          ctx.ellipse(22, -62, 16, 6, -0.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+    }
+
+    // A guard: bigger than a regular hunter, with a spear in his hand.
+    function drawGuard(guard, time) {
+      ctx.save();
+      // A defeated guard tips over and slowly fades away
+      if (guard.defeated) {
+        const f = 1 - guard.fallTime;
+        ctx.globalAlpha = Math.max(0, guard.fallTime);
+        ctx.translate(0, -2);
+        ctx.rotate(f * 1.5);
+      } else {
+        ctx.rotate(Math.sin(time * 1.6 + guard.sway) * 0.03);
+      }
+
+      const hit = guard.flinch > 0;
+
+      // Legs
+      ctx.fillStyle = hit ? '#d98a7a' : '#9b6b43';
+      ctx.fillRect(-6, -16, 5, 16);
+      ctx.fillRect(2, -16, 5, 16);
+      ctx.fillStyle = '#4a3524';
+      ctx.fillRect(-7, -2.5, 8, 2.8);
+      ctx.fillRect(1, -2.5, 8, 2.8);
+
+      // Fur with a pale trim
+      ctx.fillStyle = hit ? '#e09a86' : '#6f4a2a';
+      ctx.beginPath();
+      ctx.moveTo(-9, -16);
+      ctx.lineTo(-8, -36);
+      ctx.lineTo(9, -36);
+      ctx.lineTo(10, -16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#c8b89a';
+      ctx.fillRect(-9, -36, 19, 4);
+
+      // Head with a bone helmet
+      ctx.fillStyle = '#d9a071';
+      ctx.beginPath();
+      ctx.arc(1, -42, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#e8e0cf';
+      ctx.beginPath();
+      ctx.arc(1, -44, 7, Math.PI, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(4.5, -42, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Spear held upright in his hand
+      ctx.save();
+      ctx.translate(11, -30);
+      ctx.rotate(-1.35);
+      drawWeapon({ kind: 'spear' });
+      ctx.restore();
+
+      // How many more hits he can take
+      if (!guard.defeated) {
+        for (let i = 0; i < guard.health; i++) {
+          ctx.fillStyle = '#ff5a3c';
+          ctx.beginPath();
+          ctx.arc(-4 + i * 8, -56, 2.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    // A weapon, with (0, 0) at the hand and the tip pointing right.
+    function drawWeapon(w) {
+      if (w.kind === 'spear') {
+        // Wooden shaft
+        ctx.fillStyle = '#8a6440';
+        ctx.fillRect(-12, -1.1, 34, 2.2);
+        // Cord that holds the tip in place
+        ctx.fillStyle = '#5a3f28';
+        ctx.fillRect(19, -1.6, 3, 3.2);
+        // Stone tip
+        ctx.fillStyle = '#d8d3c4';
+        ctx.beginPath();
+        ctx.moveTo(22, -3.4);
+        ctx.lineTo(31, 0);
+        ctx.lineTo(22, 3.4);
+        ctx.closePath();
+        ctx.fill();
+      } else if (w.kind === 'axe') {
+        // Handle
+        ctx.fillStyle = '#8a6440';
+        ctx.fillRect(-10, -1.2, 24, 2.4);
+        // Cord
+        ctx.fillStyle = '#5a3f28';
+        ctx.fillRect(9, -2, 3, 4);
+        // Stone head
+        ctx.fillStyle = '#9a9c94';
+        ctx.beginPath();
+        ctx.moveTo(11, -7);
+        ctx.lineTo(19, -4.5);
+        ctx.lineTo(19, 4.5);
+        ctx.lineTo(11, 7);
+        ctx.closePath();
+        ctx.fill();
+        // Sharpened edge
+        ctx.fillStyle = '#d8d3c4';
+        ctx.beginPath();
+        ctx.moveTo(17, -4.8);
+        ctx.lineTo(20, -3.5);
+        ctx.lineTo(20, 3.5);
+        ctx.lineTo(17, 4.8);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        // Bow: a bent branch with a string
+        ctx.strokeStyle = '#8a6440';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(2, 0, 11, -1.9, 1.9);
+        ctx.stroke();
+        ctx.strokeStyle = '#e4ddc8';
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(-1.5, -10.4);
+        ctx.lineTo(-1.5, 10.4);
+        ctx.stroke();
+        // Arrow on the string
+        drawArrow();
+      }
+    }
+
+    // An arrow, tip pointing right, with (0, 0) halfway along the shaft.
+    function drawArrow() {
+      ctx.fillStyle = '#8a6440';
+      ctx.fillRect(-11, -0.7, 24, 1.4);
+      ctx.fillStyle = '#d8d3c4';
+      ctx.beginPath();
+      ctx.moveTo(13, -2.4);
+      ctx.lineTo(18, 0);
+      ctx.lineTo(13, 2.4);
+      ctx.closePath();
+      ctx.fill();
+      // Feathers at the back
+      ctx.fillStyle = '#e8e0cf';
+      ctx.beginPath();
+      ctx.moveTo(-11, -0.7);
+      ctx.lineTo(-7, -3.2);
+      ctx.lineTo(-5, -0.7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-11, 0.7);
+      ctx.lineTo(-7, 3.2);
+      ctx.lineTo(-5, 0.7);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Something flying through the air.
+    function drawShot(shot) {
+      ctx.save();
+      ctx.translate(shot.x, shot.y - shot.height);
+      ctx.scale(shot.direction * shot.scale, shot.scale);
+      if (shot.kind === 'axe') {
+        // A thrown axe spins around
+        ctx.rotate(shot.spin);
+        drawWeapon({ kind: 'axe' });
+      } else if (shot.kind === 'spear') {
+        drawWeapon({ kind: 'spear' });
+      } else {
+        drawArrow();
+      }
+      ctx.restore();
+    }
+
+    // A puff of dust where a spear, axe or arrow hits.
+    function drawPuff(puff) {
+      const f = puff.age / 0.4;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - f);
+      ctx.fillStyle = '#d9cdb0';
+      for (let i = 0; i < 5; i++) {
+        const angle = (i / 5) * Math.PI * 2;
+        const r = 4 + f * 16;
+        ctx.beginPath();
+        ctx.arc(puff.x + Math.cos(angle) * r, puff.y - 20 + Math.sin(angle) * r * 0.5, 5 - f * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // A coin: a golden disc that spins on its axis and floats above the ground.
+    function drawCoin(coin, time) {
+      const hover = Math.sin(time * 3 + coin.phase) * 5;
+      const spin = Math.cos(time * 2.5 + coin.phase);   // from -1 (edge-on) to 1 (face-on)
+      const width = Math.max(2, Math.abs(spin) * 13);
+
+      ctx.save();
+      ctx.translate(coin.x, coin.y - (coin.height || 0));
+
+      // Little shadow on the ground
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 9, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.translate(0, -22 + hover);
+
+      // Rim of the coin
+      ctx.fillStyle = '#c08a16';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, width, 13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Gold
+      ctx.fillStyle = '#f6c62e';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, width * 0.78, 10.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Glint, only when the coin is facing you
+      if (width > 7) {
+        ctx.fillStyle = '#fff2a8';
+        ctx.beginPath();
+        ctx.ellipse(-width * 0.25, -4, width * 0.2, 3.5, -0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Where the shop button and the boxes inside the shop are. Drawing and
+    // clicking both use these measurements, so they always line up.
+    function shopLayout() {
+      const button = { x: canvas.width - 160, y: 20, b: 140, h: 44 };
+      const width = 440;
+      const rowHeight = 78;
+      const x = (canvas.width - width) / 2;
+      const y = Math.max(20, canvas.height / 2 - (90 + weapons.length * rowHeight) / 2);
+      const rows = weapons.map(function (g, i) {
+        return { g: g, x: x + 16, y: y + 70 + i * rowHeight, b: width - 32, h: rowHeight - 10 };
+      });
+      return {
+        button: button,
+        panel: { x: x, y: y, b: width, h: 90 + weapons.length * rowHeight },
+        rows: rows,
+        closeButton: { x: x + width - 52, y: y + 14, b: 36, h: 32 },
+      };
+    }
+
+    function drawShopButton() {
+      const k = shopLayout().button;
+      ctx.save();
+      ctx.fillStyle = 'rgba(20,40,20,0.8)';
+      ctx.strokeStyle = '#f6c62e';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(k.x, k.y, k.b, k.h, 10);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Shop (S)', k.x + k.b / 2, k.y + k.h / 2 + 1);
+      ctx.restore();
+    }
+
+    function drawShop() {
+      const w = shopLayout();
+      ctx.save();
+
+      // Dark overlay on top of the game
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Panel
+      ctx.fillStyle = '#20331f';
+      ctx.strokeStyle = '#f6c62e';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.roundRect(w.panel.x, w.panel.y, w.panel.b, w.panel.h, 16);
+      ctx.fill();
+      ctx.stroke();
+
+      // Title and your coins
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Weapon shop', w.panel.x + 20, w.panel.y + 32);
+      ctx.fillStyle = '#f6c62e';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText(coinCount + ' coins', w.panel.x + 200, w.panel.y + 33);
+
+      // Cross to close
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(w.closeButton.x + 10, w.closeButton.y + 9);
+      ctx.lineTo(w.closeButton.x + 26, w.closeButton.y + 23);
+      ctx.moveTo(w.closeButton.x + 26, w.closeButton.y + 9);
+      ctx.lineTo(w.closeButton.x + 10, w.closeButton.y + 23);
+      ctx.stroke();
+
+      // One row per weapon
+      for (const row of w.rows) {
+        const g = row.g;
+        const inHand = heldWeapon === g;
+        ctx.fillStyle = inHand ? '#2f5a2b' : '#2a4227';
+        ctx.strokeStyle = inHand ? '#8ee06a' : 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(row.x, row.y, row.b, row.h, 10);
+        ctx.fill();
+        ctx.stroke();
+
+        // Picture of the weapon
+        ctx.save();
+        ctx.translate(row.x + 46, row.y + row.h / 2);
+        ctx.scale(1.7, 1.7);
+        drawWeapon(g);
+        ctx.restore();
+
+        // Name
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(g.name, row.x + 110, row.y + row.h / 2 - 9);
+
+        // Price, or what you can do with it
+        ctx.font = '17px sans-serif';
+        if (inHand) {
+          ctx.fillStyle = '#8ee06a';
+          ctx.fillText('in your hands, throw with the space bar', row.x + 110, row.y + row.h / 2 + 13);
+        } else if (g.bought) {
+          ctx.fillStyle = '#cfe6bf';
+          ctx.fillText('bought, click to hold it', row.x + 110, row.y + row.h / 2 + 13);
+        } else {
+          ctx.fillStyle = coinCount >= g.price ? '#f6c62e' : '#b08a8a';
+          ctx.fillText(g.price + ' coins', row.x + 110, row.y + row.h / 2 + 13);
+        }
+      }
+
+      // Help text at the bottom of the panel
+      if (!message || messageTime <= 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.65)';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Arrow keys to walk, space bar to throw', w.panel.x + w.panel.b / 2, w.panel.y + w.panel.h - 16);
+      }
+
+      // Short message at the bottom
+      if (message && messageTime > 0) {
+        ctx.fillStyle = '#ffd9a0';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(message, w.panel.x + w.panel.b / 2, w.panel.y + w.panel.h - 16);
+      }
+      ctx.restore();
+    }
+
+    // Is this point inside this box?
+    function inBox(px, py, box) {
+      return px >= box.x && px <= box.x + box.b && py >= box.y && py <= box.y + box.h;
+    }
+
+    canvas.addEventListener('mousedown', function (e) {
+      const px = e.clientX;
+      const py = e.clientY;
+      const w = shopLayout();
+
+      if (!shopOpen) {
+        if (inBox(px, py, w.button)) shopOpen = true;
+        return;
+      }
+
+      if (inBox(px, py, w.closeButton)) { shopOpen = false; return; }
+
+      for (const row of w.rows) {
+        if (!inBox(px, py, row)) continue;
+        const g = row.g;
+        if (heldWeapon === g) {
+          heldWeapon = null;  // put it away again
+        } else if (g.bought) {
+          heldWeapon = g;     // already bought, so just pick it up
+        } else if (coinCount >= g.price) {
+          coinCount -= g.price;
+          g.bought = true;
+          heldWeapon = g;
+          message = g.name + ' bought!';
+          messageTime = 2;
+        } else {
+          message = 'Not enough coins, find ' + (g.price - coinCount) + ' more!';
+          messageTime = 2;
+        }
+        return;
+      }
+
+      // Clicked outside the panel: close the shop
+      if (!inBox(px, py, w.panel)) shopOpen = false;
+    });
+
+    // The number of collected coins, top left of the screen.
+    function drawCounter() {
+      ctx.save();
+      ctx.translate(26, 34);
+      ctx.fillStyle = '#c08a16';
+      ctx.beginPath();
+      ctx.arc(0, 0, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f6c62e';
+      ctx.beginPath();
+      ctx.arc(0, 0, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(coinCount + ' / ' + coins.length, 22, 1);
+      ctx.restore();
+    }
+
+    // Small map at the bottom right: the whole jungle in one strip, with the coins
+    // still lying around and a dot for yourself.
+    function drawMinimap() {
+      const b = 240;
+      const h = 30;
+      const x = canvas.width - b - 20;
+      const y = canvas.height - h - 20;
+      ctx.save();
+      ctx.fillStyle = 'rgba(20,40,20,0.72)';
+      ctx.strokeStyle = 'rgba(246,198,46,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, b, h, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      // The part of the jungle you can see right now
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fillRect(x + (camera.x / world.width) * b, y + 3, (canvas.width / world.width) * b, h - 6);
+
+      // Coins still lying around
+      ctx.fillStyle = '#f6c62e';
+      for (const coin of coins) {
+        if (coin.collected) continue;
+        ctx.beginPath();
+        ctx.arc(x + (coin.x / world.width) * b, y + h / 2, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // The hunters
+      ctx.fillStyle = '#ff5a3c';
+      for (const hunter of hunters) {
+        ctx.beginPath();
+        ctx.arc(x + (hunter.x / world.width) * b, y + h / 2, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // The dolmen
+      if (dolmen) {
+        ctx.fillStyle = '#b9bbb4';
+        ctx.fillRect(x + (dolmen.x / world.width) * b - 3, y + h / 2 - 3, 6, 6);
+      }
+
+      // The cave to the next level
+      if (cave) {
+        ctx.fillStyle = '#fff2a8';
+        ctx.beginPath();
+        ctx.arc(x + (cave.x / world.width) * b, y + 7, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // You
+      ctx.fillStyle = '#8ee06a';
+      ctx.beginPath();
+      ctx.arc(x + (dino.x / world.width) * b, y + h / 2, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Are you standing on the lift platform right now?
+    function onLift(x, y, height) {
+      if (!lift) return false;
+      return Math.abs(x - lift.x) < lift.width / 2
+        && Math.abs(y - lift.y) < lift.depth / 2
+        && Math.abs(height - lift.z) < 6;
+    }
+
+    // The highest beam you can stand on at this spot, or 0 for the forest floor.
+    function floorBelow(x, y, fromHeight) {
+      let floorZ = 0;
+      if (lift && Math.abs(x - lift.x) < lift.width / 2
+          && Math.abs(y - lift.y) < lift.depth / 2
+          && lift.z <= fromHeight + 3) {
+        floorZ = lift.z;
+      }
+      for (const beam of beams) {
+        if (Math.abs(x - beam.x) > beam.width / 2) continue;
+        if (Math.abs(y - beam.y) > beam.depth / 2) continue;
+        if (beam.z <= fromHeight + 3 && beam.z > floorZ) floorZ = beam.z;
+      }
+      return floorZ;
+    }
+
+    // Locked in the dolmen? Then tell the player what to do.
+    function drawCapturedText() {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.font = 'bold 32px sans-serif';
+      ctx.strokeText('They locked you in the dolmen!', canvas.width / 2, 70);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('They locked you in the dolmen!', canvas.width / 2, 70);
+
+      const remaining = guards.filter(function (b) { return !b.defeated; }).length;
+      ctx.font = 'bold 22px sans-serif';
+      ctx.lineWidth = 5;
+      ctx.strokeText('Beat the guards with the space bar · ' + remaining + ' to go',
+        canvas.width / 2, 106);
+      ctx.fillStyle = '#f6c62e';
+      ctx.fillText('Beat the guards with the space bar · ' + remaining + ' to go',
+        canvas.width / 2, 106);
+      ctx.restore();
+    }
+
+    // You beat every level: party text on screen.
+    function drawVictory(time) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const angle = Math.sin(time * 3) * 0.03;
+      ctx.translate(canvas.width / 2, canvas.height * 0.17);
+      ctx.rotate(angle);
+      ctx.font = 'bold 54px sans-serif';
+      ctx.lineWidth = 9;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText('YOU DID IT!', 0, 0);
+      ctx.fillStyle = 'hsl(' + Math.floor(time * 180 % 360) + ' 95% 62%)';
+      ctx.fillText('YOU DID IT!', 0, 0);
+      ctx.rotate(-angle);
+      ctx.font = 'bold 22px sans-serif';
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText('all 30 levels done · keep dancing · R to start over', 0, 44);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('all 30 levels done · keep dancing · R to start over', 0, 44);
+      ctx.restore();
+    }
+
+    // Which level you're on and which keys to use, bottom left of the screen.
+    function drawHelp() {
+      ctx.save();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+
+      const upperLine = 'Level ' + level + ' / ' + LEVEL_COUNT + (disco ? '  ·  DISCO!' : '');
+      ctx.font = 'bold 19px sans-serif';
+      ctx.lineWidth = 4;
+      ctx.strokeText(upperLine, 20, canvas.height - 44);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(upperLine, 20, canvas.height - 44);
+
+      const lowerLine = "arrows to walk · Z to jump · space to throw · S for shop · they can't catch you on the beams";
+      ctx.font = '15px sans-serif';
+      ctx.lineWidth = 3.5;
+      ctx.strokeText(lowerLine, 20, canvas.height - 22);
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.fillText(lowerLine, 20, canvas.height - 22);
+      ctx.restore();
+    }
+
+    // Big text when you finish a level.
+    function drawLevelText() {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, levelTextTime);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 64px sans-serif';
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.strokeText(levelText, canvas.width / 2, canvas.height * 0.3);
+      ctx.fillStyle = '#f6c62e';
+      ctx.fillText(levelText, canvas.width / 2, canvas.height * 0.3);
+      ctx.restore();
+    }
+
+    // Is there a dolmen wall at this spot? The opening at the front is clear,
+    // that's where you walk in. When you're captured, a stone blocks it.
+    function hitsDolmenWall(x, y) {
+      if (!dolmen) return false;
+      const dx = x - dolmen.x;
+      const dy = y - dolmen.y;
+      if (Math.abs(dx) > DOLMEN.halfWidth + 10 || dy < DOLMEN.back - 30 || dy > DOLMEN.front + 24) return false;
+      // Back wall
+      if (dy < DOLMEN.back + DOLMEN.thick) return true;
+      // Side walls
+      if (Math.abs(dx) > DOLMEN.halfWidth - DOLMEN.thick) return true;
+      // Front, except for the opening in the middle
+      if (dy > DOLMEN.front - DOLMEN.thick) {
+        if (Math.abs(dx) > DOLMEN.gate) return true;
+        if (captured) return true;      // the big boulder in front of the opening
+      }
+      return false;
+    }
+
+    // Only the rocks, logs and stumps. Spears and arrows collide with these.
+    function hitsObstacle(x, y) {
+      for (const o of obstacles) {
+        const dx = (x - o.x) / (o.rx * o.scale + 12);
+        const dy = (y - o.y) / (o.ry * o.scale + 7);
+        if (dx * dx + dy * dy < 1) return true;
+      }
+      return false;
+    }
+
+    // Everything the dino bumps into.
+    function collides(x, y) {
+      return hitsDolmenWall(x, y) || hitsObstacle(x, y);
+    }
+
+    // Butterflies fluttering in circles above the forest floor.
+    function drawButterflies(time) {
+      for (const v of butterflies) {
+        const x = v.x - camera.x + Math.sin(time * v.speed + v.phase) * 70;
+        if (x < -30 || x > canvas.width + 30) continue;
+        const y = v.y - v.height + Math.cos(time * v.speed * 1.7 + v.phase) * 18;
+        const flap = Math.abs(Math.sin(time * 11 + v.phase));
+        ctx.save();
+        ctx.translate(v.x + Math.sin(time * v.speed + v.phase) * 70, y);
+        ctx.fillStyle = v.color;
+        ctx.beginPath();
+        ctx.ellipse(-2.5, 0, 3.4, 1 + flap * 3.4, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(2.5, 0, 3.4, 1 + flap * 3.4, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#4a3a24';
+        ctx.fillRect(-0.6, -2, 1.2, 4);
+        ctx.restore();
+      }
+    }
+
+    // Leaves drifting down from above.
+    function drawFallingLeaves(time) {
+      for (const leaf of fallingLeaves) {
+        const x = leaf.x + Math.sin(time * 0.8 + leaf.phase) * leaf.swing;
+        if (x - camera.x < -30 || x - camera.x > canvas.width + 30) continue;
+        ctx.save();
+        ctx.translate(x, leaf.y);
+        ctx.rotate(time * 1.6 + leaf.phase);
+        ctx.fillStyle = disco
+          ? 'hsl(' + Math.floor((leaf.phase * 57 + time * 120) % 360) + ' 95% 62%)'
+          : leaf.color;
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 7 * leaf.scale, 3 * leaf.scale, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Darken the edges of the screen a little, which makes it calmer to look at.
+    function drawVignette() {
+      const r = ctx.createRadialGradient(
+        canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.42,
+        canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.78);
+      r.addColorStop(0, 'rgba(0,0,0,0)');
+      r.addColorStop(1, 'rgba(10,20,10,0.42)');
+      ctx.fillStyle = r;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // The ferns stand in front of the dino, so they're drawn after him.
+    function drawForeground(time) {
+      for (const fern of ferns) {
+        if (fern.x < camera.x - 120 || fern.x > camera.x + canvas.width + 120) continue;
+        ctx.save();
+        ctx.translate(fern.x, fern.y);
+        ctx.scale(fern.size, fern.size);
+        const sway = Math.sin(time * 0.8 + fern.phase) * 0.06;
+        for (let i = -3; i <= 3; i++) {
+          ctx.save();
+          ctx.rotate(-1.57 + i * 0.38 + sway);
+          drawLeaf(46 + Math.abs(3 - Math.abs(i)) * 8, i % 2 === 0 ? '#20491f' : '#2a5c27');
+          ctx.restore();
+        }
+        ctx.restore();
+      }
+    }
+
+    // The baby dino stands in the middle of the screen and bobs gently up and down.
+    const dino = {
+      x: 0,           // position from left to right
+      y: 0,           // position on the forest floor: lower on screen is closer
+      time: 0,        // keeps ticking, for bobbing and blinking
+      step: 0,        // ticks up with every step, drives the leg animation
+      height: 0,      // how high he is above the forest floor
+      vz: 0,          // how fast he's moving up or down
+      onGround: true,
+      coyoteTime: 0,  // you can still jump for a moment after stepping off a beam
+      facesRight: true,
+      walking: false,
+    };
+
+    // ---- Weapon shop ----
+    // Three prehistoric weapons. You buy them with your coins and throw or
+    // shoot them with the space bar.
+    const weapons = [
+      { name: 'Spear',         kind: 'spear', price: 3,  speed: 520, cooldown: 0.55, bought: false },
+      { name: 'Axe',           kind: 'axe',   price: 6,  speed: 430, cooldown: 0.45, bought: false },
+      { name: 'Bow and arrow', kind: 'bow',   price: 10, speed: 720, cooldown: 0.22, bought: false },
+    ];
+    let shots = [];         // everything flying through the air
+    let puffs = [];         // dust puffs where something hits
+    let throwCooldown = 0;  // how long until you can throw again
+
+    let shopOpen = false;
+    let heldWeapon = null;  // the weapon the dino is holding
+    let message = '';       // short message in the shop, e.g. not enough coins
+    let messageTime = 0;
+
+    const WALK_SPEED = 190;  // how fast he walks, in pixels per second
+    const JUMP_FORCE = 660;  // how hard he pushes off
+    const GRAVITY = 1500;
+
+    // Which keys are held down right now.
+    const keys = {};
+    window.addEventListener('keydown', function (e) {
+      if (e.key.startsWith('Arrow')) {
+        keys[e.key] = true;
+        e.preventDefault();   // otherwise the page scrolls along
+      }
+      if (e.key === ' ') {
+        keys[' '] = true;
+        e.preventDefault();
+      }
+      if (e.key.toLowerCase() === 'z') {
+        keys['z'] = true;
+        e.preventDefault();
+      }
+      if (e.key.toLowerCase() === 'r' && won) {
+        // Start over, you keep your coins and weapons
+        level = 1;
+        won = false;
+        captured = false;
+        shots = [];
+        puffs = [];
+        rebuild();
+        dino.x = start.x;
+        dino.y = start.y;
+        dino.height = 0;
+        dino.vz = 0;
+        levelText = 'Level 1';
+        levelTextTime = 2;
+      }
+      if (e.key === 's' || e.key === 'S') shopOpen = !shopOpen;
+      if (e.key === 'Escape') shopOpen = false;
+    });
+    window.addEventListener('keyup', function (e) {
+      keys[e.key] = false;
+      if (e.key.toLowerCase() === 'z') keys['z'] = false;
+    });
+
+    // Further back on the forest floor he's smaller, closer up he's bigger.
+    function scaleAtDepth(y) {
+      const depth = (y - groundY) / Math.max(1, canvas.height - groundY);
+      return 2.4 + depth * 2.2;
+    }
+
+    function dinoScale() {
+      return scaleAtDepth(dino.y);
+    }
+
+    // The hunters lock you in the dolmen.
+    function getCaught() {
+      captured = true;
+      dino.x = dolmen.x;
+      dino.y = dolmen.y + 40;
+      dino.height = 0;
+      dino.vz = 0;
+      dino.walking = false;
+      camera.x = Math.max(0, Math.min(world.width - canvas.width, dino.x - canvas.width / 2));
+      // Without a weapon you're stuck: the guards left a spear in the dolmen.
+      if (!heldWeapon) heldWeapon = weapons[0];
+    }
+
+    // Both guards beaten: the stone rolls away and you get a spear.
+    function setFree() {
+      const gotSpear = !weapons[0].bought;
+      weapons[0].bought = true;
+      if (!heldWeapon) heldWeapon = weapons[0];
+      if (captured) {
+        captured = false;
+        dino.y = Math.min(canvas.height - 10, dolmen.y + DOLMEN.front + 60);
+      }
+      // The other hunters get spooked and keep their distance for a while
+      for (const hunter of hunters) {
+        hunter.scaredTime = 4;
+        hunter.dogScaredTime = 4;
+      }
+      levelText = gotSpear ? 'Free! You get a spear!' : 'Free!';
+      levelTextTime = 2.2;
+    }
+
+    // The two guards at the entrance: they wait for you to touch them.
+    function updateGuards(dt) {
+      for (const guard of guards) {
+        if (guard.flinch > 0) guard.flinch -= dt;
+        if (guard.defeated) {
+          guard.fallTime -= dt;
+          continue;
+        }
+        // Touch him and he grabs you
+        if (!captured && !disco && dino.height < 30
+            && Math.abs(dino.x - guard.x) < 30 && Math.abs(dino.y - guard.y) < 24) {
+          getCaught();
+          return;
+        }
+      }
+
+      // Remove defeated guards once they've completely faded away
+      const countBefore = guards.length;
+      guards = guards.filter(function (guard) {
+        return !guard.defeated || guard.fallTime > 0;
+      });
+      if (guards.length === 0 && countBefore > 0) setFree();
+    }
+
+    // The people and their dogs: wander around, give chase, or run away scared.
+    function updateHunters(dt) {
+      const catchable = !disco && !captured && dino.height < 30;
+
+      for (const hunter of hunters) {
+        const dx = dino.x - hunter.x;
+        const dy = dino.y - hunter.y;
+        const distance = Math.hypot(dx, dy * 1.6);
+
+        if (disco) {
+          hunter.state = 'patrol';   // they're busy dancing, not hunting
+        } else if (hunter.scaredTime > 0) {
+          hunter.scaredTime -= dt;
+          hunter.state = 'scared';
+        } else if (catchable && distance < 340) {
+          hunter.state = 'chase';
+        } else {
+          hunter.state = 'patrol';
+        }
+
+        // The hunter himself
+        let speed = 0;
+        let dirX = 0;
+        let dirY = 0;
+        if (hunter.state === 'chase') {
+          speed = 120;
+          dirX = dx;
+          dirY = dy;
+        } else if (hunter.state === 'scared') {
+          speed = 175;
+          dirX = -dx;
+          dirY = -dy;
+        } else {
+          // Back and forth around his own spot
+          speed = 55;
+          dirX = hunter.facesRight ? 1 : -1;
+          dirY = 0;
+          if (Math.abs(hunter.x - hunter.home) > 170) hunter.facesRight = hunter.x < hunter.home;
+        }
+        const len = Math.hypot(dirX, dirY) || 1;
+        hunter.x += (dirX / len) * speed * dt;
+        hunter.y += (dirY / len) * speed * dt;
+        if (hunter.state !== 'patrol') hunter.facesRight = dirX > 0;
+        hunter.step += dt * (hunter.state === 'patrol' ? 4 : 9);
+
+        // The dog runs ahead during a chase, otherwise it stays close to its owner
+        let targetX = hunter.x - (hunter.facesRight ? 45 : -45);
+        let targetY = hunter.y + 14;
+        let dogSpeed = 110;
+        if (hunter.dogScaredTime > 0) {
+          hunter.dogScaredTime -= dt;
+          targetX = hunter.dogX - dx;
+          targetY = hunter.dogY - dy;
+          dogSpeed = 210;
+        } else if (hunter.state === 'chase') {
+          targetX = dino.x;
+          targetY = dino.y;
+          dogSpeed = 185;
+        }
+        const hdx = targetX - hunter.dogX;
+        const hdy = targetY - hunter.dogY;
+        const hl = Math.hypot(hdx, hdy);
+        if (hl > 6) {
+          hunter.dogX += (hdx / hl) * dogSpeed * dt;
+          hunter.dogY += (hdy / hl) * dogSpeed * dt;
+          hunter.dogFacesRight = hdx > 0;
+          hunter.dogStep += dt * 13;
+        }
+
+        // Everyone stays on the forest floor
+        hunter.y = Math.min(canvas.height - 12, Math.max(groundY + 10, hunter.y));
+        hunter.dogY = Math.min(canvas.height - 8, Math.max(groundY + 8, hunter.dogY));
+
+        // Has he caught you?
+        const touchesHunter = catchable && hunter.scaredTime <= 0
+          && Math.abs(dino.x - hunter.x) < 30 && Math.abs(dino.y - hunter.y) < 24;
+        const touchesDog = catchable && hunter.dogScaredTime <= 0
+          && Math.abs(dino.x - hunter.dogX) < 26 && Math.abs(dino.y - hunter.dogY) < 20;
+        if (touchesHunter || touchesDog) {
+          if (guards.length === 0) {
+            // Without guards nobody can lock you up anymore, so they just get spooked
+            hunter.scaredTime = 2.5;
+            hunter.dogScaredTime = 2.5;
+          } else {
+            getCaught();
+            return;
+          }
+        }
+      }
+    }
+
+    function update(dt) {
+      dino.time += dt;
+      if (messageTime > 0) messageTime -= dt;
+      if (levelTextTime > 0) levelTextTime -= dt;
+
+      // With the shop open the dino stands still, so you can pick in peace.
+      if (shopOpen) {
+        dino.walking = false;
+        return;
+      }
+
+      updateGuards(dt);
+      if (!captured) {
+        updateHunters(dt);
+        if (captured) return;
+      }
+
+      // Work out the direction from the arrow keys being held
+      let dx = 0;
+      let dy = 0;
+      if (keys['ArrowLeft']) dx -= 1;
+      if (keys['ArrowRight']) dx += 1;
+      if (keys['ArrowUp']) dy -= 1;
+      if (keys['ArrowDown']) dy += 1;
+
+      dino.walking = dx !== 0 || dy !== 0;
+      if (dx < 0) dino.facesRight = false;
+      if (dx > 0) dino.facesRight = true;
+
+      if (dino.walking) {
+        // Walking diagonally is no faster than walking straight
+        const len = Math.hypot(dx, dy);
+        const stepX = (dx / len) * WALK_SPEED * dt;
+        const stepY = (dy / len) * WALK_SPEED * dt;
+        // Try each axis separately: that way you slide along a rock
+        // instead of getting completely stuck against it.
+        // Jump high enough and you just fly over it
+        const isLow = dino.height < 25;
+        if (!isLow || !collides(dino.x + stepX, dino.y)) dino.x += stepX;
+        if (!isLow || !collides(dino.x, dino.y + stepY)) dino.y += stepY;
+        dino.step += dt * 9;
+      }
+
+      // The lift slowly goes up and down. Stand on it and it takes you up.
+      if (lift) {
+        const ridingLift = onLift(dino.x, dino.y, dino.height) && dino.vz <= 0;
+        const wave = 0.5 - 0.5 * Math.cos(dino.time * 0.8);
+        lift.z = lift.low + (lift.high - lift.low) * wave;
+        if (ridingLift) {
+          dino.height = lift.z;
+          dino.vz = 0;
+          dino.onGround = true;
+        }
+      }
+
+      // Jump with Z, after which gravity pulls him back down.
+      // If you just stepped off a beam, you still get a brief moment to jump.
+      if (dino.onGround) dino.coyoteTime = 0.14;
+      else if (dino.coyoteTime > 0) dino.coyoteTime -= dt;
+      if (keys['z'] && dino.coyoteTime > 0) {
+        dino.vz = JUMP_FORCE;
+        dino.onGround = false;
+        dino.coyoteTime = 0;
+      }
+      const prevHeight = dino.height;
+      dino.vz -= GRAVITY * dt;
+      dino.height += dino.vz * dt;
+
+      // Does he land on a beam or on the forest floor?
+      const floorZ = floorBelow(dino.x, dino.y, prevHeight);
+      if (dino.height <= floorZ) {
+        dino.height = floorZ;
+        dino.vz = 0;
+        dino.onGround = true;
+      } else {
+        dino.onGround = false;
+      }
+
+      // Captured? Then you can't get past the boulder. You can still throw,
+      // and that's exactly how you break free.
+      if (captured) {
+        dino.y = Math.min(dolmen.y + DOLMEN.front - DOLMEN.thick - 6, dino.y);
+      }
+
+      // Into the cave at the top of the beams: on to the next level
+      if (!captured && !won && cave && Math.abs(dino.x - cave.x) < 60
+          && Math.abs(dino.y - cave.y) < 55 && dino.height > cave.z - 45) {
+        if (level >= LEVEL_COUNT) {
+          // That was the last level: party on the dance floor
+          won = true;
+          levelText = 'All 30 levels done!';
+          levelTextTime = 6;
+          dino.x = world.width / 2;
+          dino.y = groundY + 80;
+          dino.height = 0;
+          dino.vz = 0;
+          camera.x = Math.max(0, Math.min(world.width - canvas.width, dino.x - canvas.width / 2));
+          return;
+        }
+        level += 1;
+        levelText = level >= LEVEL_COUNT ? 'DISCO LEVEL!' : 'Level ' + level + '!';
+        levelTextTime = 2.5;
+        shots = [];
+        puffs = [];
+        captured = false;
+        rebuild();
+        dino.x = start.x;
+        dino.y = start.y;
+        dino.height = 0;
+        dino.vz = 0;
+        dino.onGround = true;
+        camera.x = Math.max(0, Math.min(world.width - canvas.width, dino.x - canvas.width / 2));
+        return;
+      }
+
+      // The space bar throws your weapon, unless you just threw it
+      if (throwCooldown > 0) throwCooldown -= dt;
+      if (keys[' '] && heldWeapon && throwCooldown <= 0) {
+        const direction = dino.facesRight ? 1 : -1;
+        const scale = dinoScale() * 0.75;
+        shots.push({
+          kind: heldWeapon.kind === 'bow' ? 'arrow' : heldWeapon.kind,
+          x: dino.x + direction * 24 * scale,
+          y: dino.y,
+          height: 17 * dinoScale() + dino.height,   // how high above the ground it flies
+          direction: direction,
+          speed: heldWeapon.speed,
+          scale: scale,
+          spin: 0,
+          distance: 0,
+        });
+        throwCooldown = heldWeapon.cooldown;
+      }
+
+      // Move everything that's flying a bit further along
+      for (const shot of shots) {
+        shot.x += shot.direction * shot.speed * dt;
+        shot.distance += shot.speed * dt;
+        shot.spin += dt * 16;
+        // Does it hit a guard? Two hits and he goes down.
+        for (const guard of guards) {
+          if (guard.defeated || guard.flinch > 0) continue;
+          if (Math.abs(shot.x - guard.x) < 30 && Math.abs(shot.y - guard.y) < 50) {
+            guard.health -= 1;
+            guard.flinch = 0.35;
+            guard.x += shot.direction * 10;          // he staggers back
+            puffs.push({ x: shot.x, y: shot.y, age: 0 });
+            shot.gone = true;
+            if (guard.health <= 0) {
+              guard.defeated = true;
+              guard.fallTime = 1.1;
+            }
+          }
+        }
+
+        // Does it hit a hunter or a dog? They get the fright of their life and run off.
+        for (const hunter of hunters) {
+          if (hunter.scaredTime <= 0 && Math.abs(shot.x - hunter.x) < 28 && Math.abs(shot.y - hunter.y) < 26) {
+            hunter.scaredTime = 5;
+            hunter.dogScaredTime = 5;
+            puffs.push({ x: shot.x, y: shot.y, age: 0 });
+            shot.gone = true;
+          }
+          if (hunter.dogScaredTime <= 0 && Math.abs(shot.x - hunter.dogX) < 24 && Math.abs(shot.y - hunter.dogY) < 22) {
+            hunter.dogScaredTime = 5;
+            puffs.push({ x: shot.x, y: shot.y, age: 0 });
+            shot.gone = true;
+          }
+        }
+
+        // Does it hit a rock, log or stump? Then it stops there.
+        if (hitsObstacle(shot.x, shot.y)) {
+          puffs.push({ x: shot.x, y: shot.y, age: 0 });
+          shot.gone = true;
+        }
+        // Out of the world or flown too far: clean it up
+        if (shot.x < -60 || shot.x > world.width + 60 || shot.distance > 900) shot.gone = true;
+      }
+      shots = shots.filter(function (shot) { return !shot.gone; });
+
+      // Drifting leaves sink down and start over at the top
+      for (const leaf of fallingLeaves) {
+        leaf.y += leaf.fallSpeed * dt;
+        if (leaf.y > canvas.height + 20) {
+          leaf.y = -20;
+          leaf.x = camera.x + Math.random() * canvas.width;
+        }
+      }
+
+      for (const puff of puffs) puff.age += dt;
+      puffs = puffs.filter(function (puff) { return puff.age < 0.4; });
+
+      // Pick up coins he walks past
+      for (const coin of coins) {
+        if (coin.collected) continue;
+        if (Math.abs(dino.x - coin.x) < 26 && Math.abs(dino.y - coin.y) < 20
+            && Math.abs(dino.height - (coin.height || 0)) < 45) {
+          coin.collected = true;
+          coinCount += 1;
+        }
+      }
+
+      // He stays on the forest floor and inside the world
+      const margin = 30 * dinoScale();
+      dino.x = Math.min(world.width - margin, Math.max(margin, dino.x));
+      dino.y = Math.min(canvas.height - 10, Math.max(groundY + 6, dino.y));
+
+      // The camera keeps the dino centered, but stops at the edge of the world
+      const target = dino.x - canvas.width / 2;
+      camera.x = Math.max(0, Math.min(world.width - canvas.width, target));
+    }
+
+    // Draws the baby dino with (0, 0) at his feet, in his own small units.
+    function drawDino() {
+      // Tail
+      ctx.fillStyle = '#5bbf4a';
+      ctx.beginPath();
+      ctx.moveTo(-8, -14);
+      ctx.quadraticCurveTo(-26, -10, -22, -2);
+      ctx.quadraticCurveTo(-14, -6, -6, -8);
+      ctx.closePath();
+      ctx.fill();
+
+      // Legs and feet: while walking they swing forward in turn
+      const swing = dino.walking ? Math.sin(dino.step) * 4 : 0;
+      const raise = dino.walking ? Math.max(0, Math.sin(dino.step)) * 2 : 0;
+      const swing2 = dino.walking ? Math.sin(dino.step + Math.PI) * 4 : 0;
+      const raise2 = dino.walking ? Math.max(0, Math.sin(dino.step + Math.PI)) * 2 : 0;
+
+      ctx.fillStyle = '#4aa83c';
+      ctx.fillRect(-7 + swing, -8, 5, 8 - raise);
+      ctx.fillRect(2 + swing2, -8, 5, 8 - raise2);
+
+      ctx.fillStyle = '#3d8f31';
+      ctx.fillRect(-9 + swing, -2 - raise, 8, 2);
+      ctx.fillRect(1 + swing2, -2 - raise2, 8, 2);
+
+      // Body
+      ctx.fillStyle = '#5bbf4a';
+      ctx.beginPath();
+      ctx.ellipse(0, -16, 11, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Belly
+      ctx.fillStyle = '#c8ef9a';
+      ctx.beginPath();
+      ctx.ellipse(1, -13, 7, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Head
+      ctx.fillStyle = '#5bbf4a';
+      ctx.beginPath();
+      ctx.ellipse(4, -30, 10, 9, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Snout
+      ctx.beginPath();
+      ctx.ellipse(12, -28, 5, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Nostril
+      ctx.fillStyle = '#3d8f31';
+      ctx.fillRect(14, -30, 1, 1);
+
+      // Eye: a quick blink every few seconds
+      const blinking = (dino.time % 3) > 2.85;
+      ctx.fillStyle = '#222';
+      if (blinking) {
+        ctx.fillRect(4, -31, 4, 1);
+      } else {
+        ctx.beginPath();
+        ctx.arc(6, -31, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(6.7, -31.7, 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Little crest on his head
+      ctx.fillStyle = '#f5d24a';
+      ctx.beginPath();
+      ctx.moveTo(0, -37);
+      ctx.lineTo(3, -42);
+      ctx.lineTo(5, -37);
+      ctx.closePath();
+      ctx.fill();
+
+      // Back plates
+      ctx.fillStyle = '#f5d24a';
+      for (const [x, y, h] of [[-4, -24, 4], [-9, -21, 3], [-13, -18, 2]]) {
+        ctx.beginPath();
+        ctx.moveTo(x - 2, y);
+        ctx.lineTo(x, y - h);
+        ctx.lineTo(x + 2, y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Little arm
+      ctx.fillStyle = '#4aa83c';
+      ctx.beginPath();
+      ctx.ellipse(8, -18, 4, 2.5, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // He holds the bought weapon in front of him
+      if (heldWeapon) {
+        ctx.save();
+        ctx.translate(7, -17);
+        ctx.rotate(-0.12);
+        ctx.scale(0.8, 0.8);
+        drawWeapon(heldWeapon);
+        ctx.restore();
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawJungle(dino.time);
+
+      // Standing still he breathes softly, walking he bobs in rhythm with his steps.
+      const bob = dino.walking
+        ? Math.abs(Math.sin(dino.step)) * -4
+        : (disco ? -Math.abs(Math.sin(beatAt(dino.time) * Math.PI)) * 9 : Math.sin(dino.time * 2) * 3);
+
+      const size = dinoScale();
+
+      // Everything in the world scrolls with the camera.
+      ctx.save();
+      ctx.translate(-camera.x, 0);
+
+      // Is this bit of the world on screen? If not, there's no need to draw it.
+      function onScreen(x) {
+        return x > camera.x - 160 && x < camera.x + canvas.width + 160;
+      }
+
+      // Things further forward get drawn later, so they appear in front.
+      const layers = [];
+      for (const o of obstacles) {
+        if (!onScreen(o.x)) continue;
+        layers.push({ y: o.y, draw: function () {
+          const scale = o.scale * (1.3 + (o.y - groundY) / Math.max(1, canvas.height - groundY));
+          ctx.save();
+          ctx.translate(o.x, o.y);
+          ctx.scale(scale, scale);
+          drawObstacle(o);
+          ctx.restore();
+        } });
+      }
+      // The dolmen: the back stones first, the front stones later, so you
+      // really stand between them when you're captured.
+      if (dolmen && onScreen(dolmen.x)) {
+        layers.push({ y: dolmen.y + DOLMEN.back - 10, draw: function () {
+          ctx.save();
+          ctx.translate(dolmen.x, dolmen.y);
+          drawDolmen(false);
+          ctx.restore();
+        } });
+        layers.push({ y: dolmen.y + DOLMEN.front, draw: function () {
+          ctx.save();
+          ctx.translate(dolmen.x, dolmen.y);
+          drawDolmen(true);
+          ctx.restore();
+        } });
+      }
+
+      // The two guards at the entrance
+      for (const guard of guards) {
+        if (!onScreen(guard.x)) continue;
+        layers.push({ y: guard.y, draw: function () {
+          const scale = scaleAtDepth(guard.y) * 1.05;
+          ctx.save();
+          ctx.translate(guard.x, guard.y + danceBob);
+          ctx.scale(guard.facesRight ? scale : -scale, scale);
+          drawGuard(guard, dino.time);
+          ctx.restore();
+        } });
+      }
+
+      // In the disco everyone bobs along to the beat
+      const danceBob = disco ? -Math.abs(Math.sin(beatAt(dino.time) * Math.PI)) * 10 : 0;
+
+      // People with dogs
+      for (const hunter of hunters) {
+        if (onScreen(hunter.x)) {
+          layers.push({ y: hunter.y, draw: function () {
+            const scale = scaleAtDepth(hunter.y) * 0.95;
+            ctx.save();
+            ctx.translate(hunter.x, hunter.y + danceBob);
+            ctx.scale(hunter.facesRight ? scale : -scale, scale);
+            drawHunter(hunter);
+            ctx.restore();
+          } });
+        }
+        if (onScreen(hunter.dogX)) {
+          layers.push({ y: hunter.dogY, draw: function () {
+            const scale = scaleAtDepth(hunter.dogY) * 0.95;
+            ctx.save();
+            ctx.translate(hunter.dogX, hunter.dogY + danceBob * 0.6);
+            ctx.scale(hunter.dogFacesRight ? scale : -scale, scale);
+            drawDog(hunter);
+            ctx.restore();
+          } });
+        }
+      }
+
+      // The cave is far back, so it comes early in the order
+      if (cave && onScreen(cave.x)) {
+        layers.push({ y: cave.y - 1, draw: function () { drawCave(dino.time); } });
+      }
+      if (lift && onScreen(lift.x)) {
+        layers.push({ y: lift.y, draw: function () {
+          ctx.save();
+          ctx.translate(lift.x, lift.y);
+          drawLift(dino.time);
+          ctx.restore();
+        } });
+      }
+      if (sign && onScreen(sign.x)) {
+        layers.push({ y: sign.y, draw: function () {
+          const scale = scaleAtDepth(sign.y) * 0.5;
+          ctx.save();
+          ctx.translate(sign.x, sign.y);
+          ctx.scale(scale, scale);
+          drawSign();
+          ctx.restore();
+        } });
+      }
+      for (const beam of beams) {
+        if (!onScreen(beam.x)) continue;
+        layers.push({ y: beam.y, draw: function () {
+          ctx.save();
+          ctx.translate(beam.x, beam.y);
+          drawBeam(beam);
+          ctx.restore();
+        } });
+      }
+      for (const coin of coins) {
+        if (coin.collected || !onScreen(coin.x)) continue;
+        layers.push({ y: coin.y, draw: function () { drawCoin(coin, dino.time); } });
+      }
+      for (const shot of shots) {
+        layers.push({ y: shot.y + 1, draw: function () { drawShot(shot); } });
+      }
+      // When you're on a beam, you should be drawn just in front of it.
+      layers.push({ y: dino.y + (dino.height > 0 ? 25 : 0), draw: function () {
+        // Shadow on the forest floor, smaller the higher he is
+        if (dino.height > 2) {
+          ctx.save();
+          ctx.globalAlpha = Math.max(0.1, 0.32 - dino.height / 1400);
+          ctx.fillStyle = '#000';
+          ctx.beginPath();
+          ctx.ellipse(dino.x, dino.y, 11 * size, 3.5 * size, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.save();
+        ctx.translate(dino.x, dino.y + bob - dino.height);
+        ctx.scale(dino.facesRight ? size : -size, size);
+        drawDino();
+        ctx.restore();
+      } });
+      layers.sort(function (a, b) { return a.y - b.y; });
+      for (const item of layers) item.draw();
+
+      for (const puff of puffs) drawPuff(puff);
+
+      drawForeground(dino.time);
+      drawButterflies(dino.time);
+      drawFallingLeaves(dino.time);
+      ctx.restore();
+
+      drawVignette();
+
+      drawCounter();
+      drawMinimap();
+      drawHelp();
+      if (captured) drawCapturedText();
+      if (levelTextTime > 0) drawLevelText();
+      if (won) drawVictory(dino.time);
+      drawShopButton();
+      if (shopOpen) drawShop();
+    }
+
+    rebuild();
+    dino.x = start.x;
+    dino.y = start.y;
+    camera.x = Math.max(0, Math.min(world.width - canvas.width, dino.x - canvas.width / 2));
+
+    let lastTime = performance.now();
+    function loop(now) {
+      update((now - lastTime) / 1000);
+      lastTime = now;
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
